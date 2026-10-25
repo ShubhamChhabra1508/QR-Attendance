@@ -657,6 +657,22 @@ footer, .site-footer {
     color: #64748b;
 }
 
+/* Navigation tab highlighting */
+nav a.active,
+.nav-link.active {
+    color: #ffffff;
+    background: #2563eb;
+    border-radius: 8px;
+    font-weight: 600;
+    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.25);
+}
+
+nav a,
+.nav-link {
+    transition: background-color 0.2s ease,
+                color 0.2s ease;
+}
+
 .toggle-password:hover {
     color: #2563eb;
 }
