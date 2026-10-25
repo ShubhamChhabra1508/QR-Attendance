@@ -656,23 +656,35 @@ footer, .site-footer {
     justify-content: center;
     color: #64748b;
 }
-
-/* Navigation tab highlighting */
-nav a.active,
-.nav-link.active {
-    color: #ffffff;
-    background: #2563eb;
-    border-radius: 8px;
-    font-weight: 600;
-    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.25);
+.toggle-password:hover {
+    color: #2563eb;
 }
-
-nav a,
+/* Navigation link */
 .nav-link {
+    display: inline-block;
+    padding: 10px 16px;
+    border-radius: 8px;
+    color: #334155;
+    text-decoration: none;
     transition: background-color 0.2s ease,
                 color 0.2s ease;
 }
 
-.toggle-password:hover {
-    color: #2563eb;
+/* Currently active tab */
+.nav-link.active {
+    background-color: #2563eb;
+    color: #ffffff;
+    font-weight: 600;
+}
+
+/* Hover effect */
+.nav-link:hover {
+    background-color: #dbeafe;
+    color: #1d4ed8;
+}
+
+/* Keep active styling on hover */
+.nav-link.active:hover {
+    background-color: #1d4ed8;
+    color: #ffffff;
 }
