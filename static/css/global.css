@@ -639,3 +639,24 @@ footer, .site-footer {
   padding: 20px 22px;
 }
 
+.password-field {
+    position: relative;
+    width: 100%;
+}
+
+.password-field input {
+    width: 100%;
+    box-sizing: border-box;
+    padding-right: 42px;
+}
+
+.toggle-password {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #64748b;
+}
+
+.toggle-password:hover {
+    color: #2563eb;
+}
