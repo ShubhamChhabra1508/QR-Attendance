@@ -2,3 +2,5 @@ Flask
 Flask-Login
 Flask-WTF
 qrcode[pil]
+SQLAlchemy
+psycopg[binary]
