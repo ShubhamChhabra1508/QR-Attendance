@@ -29,10 +29,25 @@
           <span style="text-transform: capitalize; color: var(--brand); font-weight: 700;">({{ current_user.role }})</span>
         </span>
         {% if current_user.role in ['admin', 'teacher'] %}
-          <a href="{{ url_for('admin_dashboard') }}">Dashboard</a>
-          <a href="{{ url_for('manage_teachers') }}">Teachers</a>
-          <a href="{{ url_for('manage_students') }}">Students</a>
-          <a href="{{ url_for('report') }}">Reports</a>
+          <a href="{{ url_for('admin_dashboard') }}"
+   class="nav-link {% if request.endpoint == 'admin_dashboard' %}active{% endif %}">
+    Admin Dashboard
+</a>
+
+<a href="{{ url_for('manage_teachers') }}"
+   class="nav-link {% if request.endpoint == 'manage_teachers' %}active{% endif %}">
+    Manage Teachers
+</a>
+
+<a href="{{ url_for('manage_students') }}"
+   class="nav-link {% if request.endpoint == 'manage_students' %}active{% endif %}">
+    Manage Students
+</a>
+
+<a href="{{ url_for('reports') }}"
+   class="nav-link {% if request.endpoint == 'reports' %}active{% endif %}">
+    Reports
+</a>
         {% else %}
           <a href="{{ url_for('student_dashboard') }}">My Dashboard</a>
         {% endif %}
