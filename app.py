@@ -32,6 +32,8 @@ except ImportError:
     pass
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
+if DATABASE_URL and DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
 if not DATABASE_URL:
     raise RuntimeError(
         "DATABASE_URL is not set. Example: "
@@ -985,4 +987,6 @@ def report_csv():
 
 
 if __name__ == "__main__":
+    with app.app_context():
+        init_db()
     app.run(host="0.0.0.0", port=5000)
