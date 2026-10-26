@@ -367,32 +367,19 @@ def login():
         profile = None
         with db() as con:
             row = con.execute("SELECT * FROM users WHERE username = %s", (username,)).fetchone()
-            if row:
-                print("Role:", row["role"], flush=True)
-                if row["role"] in ("admin", "teacher"):
-                    profile = con.execute("SELECT name FROM teachers WHERE user_id = %s", (row["id"],)).fetchone()
-                elif row["role"] == "student":
-                    profile = con.execute("SELECT name FROM students WHERE user_id = %s", (row["id"],)).fetchone()
-                
-                match = check_password_hash(row["password_hash"], password)
-                print("Password match:", match, flush=True)
-    if row:
-        print(f"DEBUG: Password match -> {check_password_hash(row['password_hash'], password)}", flush=True)
-            if row:
-                if row["role"] in ("admin", "teacher"):
-                    profile = con.execute("SELECT name FROM teachers WHERE user_id = %s", (row["id"],)).fetchone()
-                elif row["role"] == "student":
-                    profile = con.execute("SELECT name FROM students WHERE user_id = %s", (row["id"],)).fetchone()
+            if row and check_password_hash(row["password_hash"], password):
+            if row["role"] in ("admin", "teacher"):
+                profile = con.execute("SELECT name FROM teachers WHERE user_id = %s", (row["id"],)).fetchone()
+            elif row["role"] == "student":
+                profile = con.execute("SELECT name FROM students WHERE user_id = %s", (row["id"],)).fetchone()
 
-        if row and check_password_hash(row["password_hash"], password):
             login_user(User(row, profile))
             return redirect(url_for(
-                "admin_dashboard" if row["role"] in ("admin", "teacher")
-                else "student_dashboard"
+                "admin_dashboard" if row["role"] in ("admin", "teacher") else "student_dashboard"
             ))
-        flash("Invalid username or password.")
-    return render_template("login.html")
 
+    flash("Invalid username or password.")
+    return render_template("login.html")
 
 @app.route("/logout", methods=["POST"])
 @login_required
