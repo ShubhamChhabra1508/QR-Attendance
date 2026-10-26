@@ -365,8 +365,19 @@ def login():
         profile = None
         with db() as con:
             row = con.execute("SELECT * FROM users WHERE username = %s", (username,)).fetchone()
-            print(f"DEBUG: Connecting to DB URL -> {os.environ.get('DATABASE_URL')[:25]}...", flush=True)
-            print(f"DEBUG: Found user row -> {dict(row) if row else None}", flush=True)
+            print("--- LOGIN ATTEMPT ---", flush=True)
+            print("DATABASE_URL present:", bool(os.environ.get("DATABASE_URL")), flush=True)
+            print("User row found:", row is not None, flush=True)
+
+            if row:
+                print("Role:", row["role"], flush=True)
+                if row["role"] in ("admin", "teacher"):
+                    profile = con.execute("SELECT name FROM teachers WHERE user_id = %s", (row["id"],)).fetchone()
+                elif row["role"] == "student":
+                    profile = con.execute("SELECT name FROM students WHERE user_id = %s", (row["id"],)).fetchone()
+                
+                match = check_password_hash(row["password_hash"], password)
+                print("Password match:", match, flush=True)
     if row:
         print(f"DEBUG: Password match -> {check_password_hash(row['password_hash'], password)}", flush=True)
             if row:
