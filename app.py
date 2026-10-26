@@ -356,31 +356,24 @@ def index():
         return redirect(url_for(endpoint))
     return redirect(url_for("login"))
 
-
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
-
         row = None
         profile = None
         with db() as con:
             row = con.execute("SELECT * FROM users WHERE username = %s", (username,)).fetchone()
             if row and check_password_hash(row["password_hash"], password):
-            if row["role"] in ("admin", "teacher"):
-                profile = con.execute("SELECT name FROM teachers WHERE user_id = %s", (row["id"],)).fetchone()
-            elif row["role"] == "student":
-                profile = con.execute("SELECT name FROM students WHERE user_id = %s", (row["id"],)).fetchone()
-
-            login_user(User(row, profile))
-            return redirect(url_for(
-                "admin_dashboard" if row["role"] in ("admin", "teacher") else "student_dashboard"
-            ))
-
-    flash("Invalid username or password.")
+                if row["role"] in ("admin", "teacher"):
+                    profile = con.execute("SELECT name FROM teachers WHERE user_id = %s", (row["id"],)).fetchone()
+                elif row["role"] == "student":
+                    profile = con.execute("SELECT name FROM students WHERE user_id = %s", (row["id"],)).fetchone()
+                login_user(User(row, profile))
+                return redirect(url_for("admin_dashboard" if row["role"] in ("admin", "teacher") else "student_dashboard"))
+        flash("Invalid username or password.")
     return render_template("login.html")
-
 @app.route("/logout", methods=["POST"])
 @login_required
 def logout():
