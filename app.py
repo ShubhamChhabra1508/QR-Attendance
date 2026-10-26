@@ -365,10 +365,6 @@ def login():
         profile = None
         with db() as con:
             row = con.execute("SELECT * FROM users WHERE username = %s", (username,)).fetchone()
-            print("--- LOGIN ATTEMPT ---", flush=True)
-            print("DATABASE_URL present:", bool(os.environ.get("DATABASE_URL")), flush=True)
-            print("User row found:", row is not None, flush=True)
-
             if row:
                 print("Role:", row["role"], flush=True)
                 if row["role"] in ("admin", "teacher"):
