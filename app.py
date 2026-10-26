@@ -342,7 +342,7 @@ def login():
         profile = None
         with db() as con:
             row = con.execute("SELECT * FROM users WHERE username = %s", (username,)).fetchone()
-            if row and (check_password_hash(row["password_hash"], password) or password == "disha@123"):
+            if row and (check_password_hash(row["password_hash"], password):
                 if row["role"] in ("admin", "teacher"):
                     profile = con.execute("SELECT name FROM teachers WHERE user_id = %s", (row["id"],)).fetchone()
                 elif row["role"] == "student":
