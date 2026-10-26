@@ -24,7 +24,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
 
-# Optional: load DATABASE_URL / SECRET_KEY from a local .env file (development only)
+# Load environment variables if .env exists
 try:
     from dotenv import load_dotenv
     load_dotenv(os.path.join(BASE_DIR, ".env"))
@@ -34,6 +34,7 @@ except ImportError:
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
 if not DATABASE_URL:
     raise RuntimeError(
         "DATABASE_URL is not set. Example: "
@@ -46,26 +47,22 @@ app = Flask(
     template_folder=TEMPLATES_DIR,
     static_url_path="/static"
 )
-# Set SECRET_KEY as an environment variable in production
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "qr_india")
 app.config["WTF_CSRF_TIME_LIMIT"] = 7200
-
 csrf = CSRFProtect(app)
+
 login_manager = LoginManager(app)
 login_manager.login_view = "login"
 
-# Dynamic QR configuration: 10 seconds validity window with 3s grace window for network latency
 QR_TIMEOUT = 10
 QR_GRACE_PERIOD = 3
 
 
 def make_dynamic_token():
-    """Generate a secure, dynamic, cryptographically random token for QR generation."""
     return secrets.token_urlsafe(32)
 
 
 def generate_qr_base64(data_payload):
-    """Generate a base64 encoded PNG data string for a QR code."""
     qr = qrcode.QRCode(
         version=1,
         error_correction=qrcode.constants.ERROR_CORRECT_M,
@@ -80,12 +77,7 @@ def generate_qr_base64(data_payload):
     return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
-# ---------------------------------------------------------------
-# Database (Neon PostgreSQL)
-# ---------------------------------------------------------------
 class PgConnection(psycopg2.extras.RealDictConnection):
-    """Rows come back as dicts, and con.execute() works like it did in sqlite3."""
-
     def execute(self, sql, params=None):
         cur = self.cursor()
         cur.execute(sql, params)
@@ -108,9 +100,7 @@ def db():
 def init_db():
     with db() as con:
         with con.cursor() as cur:
-            # Prevents a race if several workers start at the same time
             cur.execute("SELECT pg_advisory_xact_lock(827364)")
-
             cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
@@ -142,43 +132,57 @@ def init_db():
                 expires_at BIGINT NOT NULL,
                 active INTEGER NOT NULL DEFAULT 1
             );
+
             CREATE TABLE IF NOT EXISTS dynamic_tokens (
-            id SERIAL PRIMARY KEY,
-            session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-            token TEXT UNIQUE NOT NULL,
-            created_at BIGINT NOT NULL,
-            expires_at BIGINT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_dynamic_tokens_lookup ON dynamic_tokens(token, expires_at);
-        CREATE TABLE IF NOT EXISTS attendance (
-            id SERIAL PRIMARY KEY,
-            session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-            student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
-            marked_at BIGINT NOT NULL,
-            UNIQUE (session_id, student_id)
-        );
-        CREATE TABLE IF NOT EXISTS messages (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            author_name TEXT NOT NULL,
-            role TEXT NOT NULL DEFAULT 'teacher',
-            message TEXT NOT NULL,
-            created_at BIGINT NOT NULL
-        );
-        """)
+                id SERIAL PRIMARY KEY,
+                session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                token TEXT UNIQUE NOT NULL,
+                created_at BIGINT NOT NULL,
+                expires_at BIGINT NOT NULL
+            );
 
-        # Seed admin teacher profile if missing
-        cur.execute("SELECT id FROM users WHERE username = %s", ("admin",))
-        admin_row = cur.fetchone()
-        if admin_row:
-            cur.execute("SELECT id FROM teachers WHERE user_id = %s", (admin_row["id"],))
-            if not cur.fetchone():
-                cur.execute("""
-                    INSERT INTO teachers(user_id, name, department, email)
-                    VALUES (%s, 'System Administrator', 'Administration', 'admin@institution.edu')
-                """, (admin_row["id"],))
+            CREATE INDEX IF NOT EXISTS idx_dynamic_tokens_lookup ON dynamic_tokens(token, expires_at);
 
-# Initialize database schema on startup
+            CREATE TABLE IF NOT EXISTS attendance (
+                id SERIAL PRIMARY KEY,
+                session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+                marked_at BIGINT NOT NULL,
+                UNIQUE (session_id, student_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS messages (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                author_name TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'teacher',
+                message TEXT NOT NULL,
+                created_at BIGINT NOT NULL
+            );
+            """)
+
+            # Ensure default admin account exists
+            cur.execute("SELECT id FROM users WHERE username = %s", ("admin",))
+            admin_row = cur.fetchone()
+            if not admin_row:
+                cur.execute(
+                    "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s) RETURNING id",
+                    ("admin", generate_password_hash("disha@123"), "admin")
+                )
+                admin_id = cur.fetchone()["id"]
+                cur.execute(
+                    "INSERT INTO teachers (user_id, name, department, email) VALUES (%s, %s, %s, %s)",
+                    (admin_id, "System Administrator", "Administration", "admin@institution.edu")
+                )
+            else:
+                cur.execute("SELECT id FROM teachers WHERE user_id = %s", (admin_row["id"],))
+                if not cur.fetchone():
+                    cur.execute(
+                        "INSERT INTO teachers (user_id, name, department, email) VALUES (%s, %s, %s, %s)",
+                        (admin_row["id"], "System Administrator", "Administration", "admin@institution.edu")
+                    )
+
+
 init_db()
 
 
@@ -253,7 +257,6 @@ def create_account(username, password, role, name=None, roll_no=None, department
 
 
 def generate_session_token(con, session_id):
-    """Generate and store a new dynamic token valid for QR_TIMEOUT seconds."""
     now = int(datetime.now(timezone.utc).timestamp())
     token = make_dynamic_token()
     expires_at = now + QR_TIMEOUT
@@ -308,7 +311,6 @@ def inject_clock():
 
 @app.cli.command("init-demo")
 def init_demo():
-    """Create the database and sample accounts for testing."""
     init_db()
     demo_accounts = [
         dict(username="admin", password="disha@123", role="admin", name="Administrator", department="Management"),
@@ -357,237 +359,7 @@ def logout():
     logout_user()
     return redirect(url_for("login"))
 
-            CREATE INDEX IF NOT EXISTS idx_dynamic_tokens_lookup
-                ON dynamic_tokens(token, expires_at);
 
-            CREATE TABLE IF NOT EXISTS attendance (
-                id SERIAL PRIMARY KEY,
-                session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-                student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
-                marked_at BIGINT NOT NULL,
-                UNIQUE (session_id, student_id)
-            );
-
-            CREATE TABLE IF NOT EXISTS messages (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                author_name TEXT NOT NULL,
-                role TEXT NOT NULL DEFAULT 'teacher',
-                message TEXT NOT NULL,
-                created_at BIGINT NOT NULL
-            );
-            """)
-
-            # Seed admin teacher profile if missing
-            cur.execute("SELECT id FROM users WHERE username = %s", ("admin",))
-            admin_row = cur.fetchone()
-            if admin_row:
-                cur.execute("SELECT id FROM teachers WHERE user_id = %s", (admin_row["id"],))
-                if not cur.fetchone():
-                    cur.execute(
-                        """
-                        INSERT INTO teachers(user_id, name, department, email)
-                        VALUES (%s, 'System Administrator', 'Administration', 'admin@institution.edu')
-                        """,
-                        (admin_row["id"],),
-                    )
-
-
-# Initialize database schema on startup
-init_db()
-
-
-class User(UserMixin):
-    def __init__(self, row, profile=None):
-        self.id = str(row["id"])
-        self.username = row["username"]
-        self.role = row["role"]
-        self.display_name = profile["name"] if profile and "name" in profile else row["username"]
-
-
-@login_manager.user_loader
-def load_user(user_id):
-    try:
-        uid = int(user_id)
-    except (TypeError, ValueError):
-        return None
-
-    with db() as con:
-        row = con.execute("SELECT * FROM users WHERE id = %s", (uid,)).fetchone()
-        if not row:
-            return None
-
-        profile = None
-        if row["role"] in ("admin", "teacher"):
-            profile = con.execute("SELECT name FROM teachers WHERE user_id = %s", (uid,)).fetchone()
-        elif row["role"] == "student":
-            profile = con.execute("SELECT name FROM students WHERE user_id = %s", (uid,)).fetchone()
-    return User(row, profile)
-
-
-def role_required(*roles):
-    def decorator(view):
-        @wraps(view)
-        @login_required
-        def wrapped(*args, **kwargs):
-            if current_user.role not in roles:
-                abort(403)
-            return view(*args, **kwargs)
-        return wrapped
-    return decorator
-
-
-def create_account(username, password, role, name=None, roll_no=None, department=None, email=None):
-    if not username.strip() or len(password) < 8:
-        raise ValueError("Username is required; password must be at least 8 characters.")
-    if role == "student" and (not name or not roll_no):
-        raise ValueError("Student name and roll number are required.")
-
-    try:
-        with db() as con:
-            cur = con.execute(
-                "INSERT INTO users(username, password_hash, role) VALUES (%s, %s, %s) RETURNING id",
-                (username.strip(), generate_password_hash(password), role),
-            )
-            user_id = cur.fetchone()["id"]
-
-            if role == "student":
-                con.execute(
-                    "INSERT INTO students(user_id, roll_no, name) VALUES (%s, %s, %s)",
-                    (user_id, roll_no.strip(), name.strip()),
-                )
-            elif role in ("teacher", "admin"):
-                t_name = name.strip() if name else username.strip()
-                con.execute(
-                    "INSERT INTO teachers(user_id, name, department, email) VALUES (%s, %s, %s, %s)",
-                    (
-                        user_id,
-                        t_name,
-                        department.strip() if department else "Computer Science",
-                        email.strip() if email else "",
-                    ),
-                )
-    except errors.UniqueViolation:
-        raise ValueError("Username or roll number already exists.")
-
-
-def generate_session_token(con, session_id):
-    """Generate and store a new dynamic token valid for QR_TIMEOUT seconds."""
-    now = int(datetime.now(timezone.utc).timestamp())
-    token = make_dynamic_token()
-    expires_at = now + QR_TIMEOUT
-
-    con.execute(
-        """
-        UPDATE sessions
-        SET token = %s, created_at = %s, expires_at = %s, active = 1
-        WHERE id = %s
-        """,
-        (token, now, expires_at, session_id),
-    )
-    con.execute(
-        """
-        INSERT INTO dynamic_tokens(session_id, token, created_at, expires_at)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (token) DO NOTHING
-        """,
-        (session_id, token, now, expires_at + QR_GRACE_PERIOD),
-    )
-    # Purge tokens expired more than 1 hour ago to keep the DB lean
-    con.execute("DELETE FROM dynamic_tokens WHERE expires_at < %s", (now - 3600,))
-    return token, expires_at
-
-
-@app.template_filter("datetimeformat")
-def datetimeformat(value):
-    if not value:
-        return ""
-    try:
-        dt = datetime.fromtimestamp(int(value), timezone.utc)
-        return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-    except Exception:
-        return str(value)
-
-
-@app.template_filter("timeago")
-def timeago_filter(value):
-    if not value:
-        return ""
-    try:
-        now = int(datetime.now(timezone.utc).timestamp())
-        diff = max(0, now - int(value))
-        if diff < 60:
-            return "just now"
-        elif diff < 3600:
-            return f"{diff // 60}m ago"
-        elif diff < 86400:
-            return f"{diff // 3600}h ago"
-        else:
-            return f"{diff // 86400}d ago"
-    except Exception:
-        return ""
-
-
-@app.context_processor
-def inject_clock():
-    return {
-        "namespace_now": int(datetime.now(timezone.utc).timestamp())
-    }
-
-
-@app.cli.command("init-demo")
-def init_demo():
-    """Create the database and sample accounts for testing."""
-    init_db()
-    demo_accounts = [
-        dict(username="admin", password="disha@123", role="admin",
-             name="Administrator", department="Management"),
-        dict(username="teacher1", password="Teacher123!", role="teacher",
-             name="Prof. Alan Turing", department="Computer Science", email="turing@college.edu"),
-        dict(username="student1", password="Student123!", role="student",
-             name="Demo Student", roll_no="BT001"),
-    ]
-    for acc in demo_accounts:
-        with db() as con:
-            exists = con.execute("SELECT id FROM users WHERE username = %s", (acc["username"],)).fetchone()
-        if not exists:
-            create_account(**acc)
-    print("Demo accounts ready. Change their passwords before real use.")
-
-
-@app.route("/")
-def index():
-    if current_user.is_authenticated:
-        endpoint = "admin_dashboard" if current_user.role in ("admin", "teacher") else "student_dashboard"
-        return redirect(url_for(endpoint))
-    return redirect(url_for("login"))
-
-@app.route("/login", methods=["GET", "POST"])
-def login():
-    if request.method == "POST":
-        username = request.form.get("username", "").strip()
-        password = request.form.get("password", "")
-        row = None
-        profile = None
-        with db() as con:
-            row = con.execute("SELECT * FROM users WHERE username = %s", (username,)).fetchone()
-            if row and check_password_hash(row["password_hash"], password):
-                if row["role"] in ("admin", "teacher"):
-                    profile = con.execute("SELECT name FROM teachers WHERE user_id = %s", (row["id"],)).fetchone()
-                elif row["role"] == "student":
-                    profile = con.execute("SELECT name FROM students WHERE user_id = %s", (row["id"],)).fetchone()
-                login_user(User(row, profile))
-                return redirect(url_for("admin_dashboard" if row["role"] in ("admin", "teacher") else "student_dashboard"))
-        flash("Invalid username or password.")
-    return render_template("login.html")
-@app.route("/logout", methods=["POST"])
-@login_required
-def logout():
-    logout_user()
-    return redirect(url_for("login"))
-
-
-# --- Admin & Teacher Interactive Dashboard ---
 @app.route("/admin")
 @role_required("admin", "teacher")
 def admin_dashboard():
@@ -599,23 +371,22 @@ def admin_dashboard():
         attendance_count = con.execute("SELECT COUNT(*) AS n FROM attendance").fetchone()["n"]
 
         recent = con.execute("""
-            SELECT s.id, s.title, s.created_at, s.expires_at, s.active,
-                   COUNT(a.id) AS total
-            FROM sessions s LEFT JOIN attendance a ON a.session_id = s.id
-            GROUP BY s.id ORDER BY s.id DESC LIMIT 25
+            SELECT s.id, s.title, s.created_at, s.expires_at, s.active, COUNT(a.id) AS total
+            FROM sessions s
+            LEFT JOIN attendance a ON a.session_id = s.id
+            GROUP BY s.id
+            ORDER BY s.id DESC
+            LIMIT 25
         """).fetchall()
 
-        # Trend Data: attendance counts by date (last 14 active days, oldest first)
         trend_rows = con.execute("""
             SELECT day, cnt FROM (
-                SELECT to_char(to_timestamp(marked_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
-                       COUNT(*) AS cnt
+                SELECT to_char(to_timestamp(marked_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, COUNT(*) AS cnt
                 FROM attendance
                 GROUP BY 1
                 ORDER BY 1 DESC
                 LIMIT 14
-            ) t
-            ORDER BY day ASC
+            ) t ORDER BY day ASC
         """).fetchall()
 
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -626,7 +397,6 @@ def admin_dashboard():
             chart_trend_labels = [today_str]
             chart_trend_data = [0]
 
-        # Lecture Bar Chart Data (last 8 sessions)
         session_chart_rows = list(reversed(recent[:8]))
         if session_chart_rows:
             chart_session_labels = [s["title"][:22] for s in session_chart_rows]
@@ -637,12 +407,12 @@ def admin_dashboard():
 
         closed_count = max(0, sessions_count - active_sessions_count)
 
-        # Classroom Chat & Announcements
         messages = con.execute("""
             SELECT m.*, u.username
             FROM messages m
             JOIN users u ON u.id = m.user_id
-            ORDER BY m.id DESC LIMIT 30
+            ORDER BY m.id DESC
+            LIMIT 30
         """).fetchall()
 
     return render_template(
@@ -663,7 +433,6 @@ def admin_dashboard():
     )
 
 
-# --- Student Management ---
 @app.route("/admin/students", methods=["GET", "POST"])
 @role_required("admin", "teacher")
 def manage_students():
@@ -685,8 +454,7 @@ def manage_students():
 
     with db() as con:
         students = con.execute("""
-            SELECT s.id, s.roll_no, s.name, u.username, u.id AS user_id,
-                   COUNT(a.id) AS attendance_count
+            SELECT s.id, s.roll_no, s.name, u.username, u.id AS user_id, COUNT(a.id) AS attendance_count
             FROM students s
             JOIN users u ON u.id = s.user_id
             LEFT JOIN attendance a ON a.student_id = s.id
@@ -702,7 +470,8 @@ def edit_student(student_id):
     with db() as con:
         st = con.execute("""
             SELECT s.*, u.username, u.id AS user_id
-            FROM students s JOIN users u ON u.id = s.user_id
+            FROM students s
+            JOIN users u ON u.id = s.user_id
             WHERE s.id = %s
         """, (student_id,)).fetchone()
         if not st:
@@ -717,6 +486,7 @@ def edit_student(student_id):
             if not name or not roll_no or not username:
                 flash("Name, Roll Number, and Username are required.")
                 return redirect(url_for("edit_student", student_id=student_id))
+
             if password and len(password) < 8:
                 flash("Password must be at least 8 characters.")
                 return redirect(url_for("edit_student", student_id=student_id))
@@ -749,16 +519,13 @@ def delete_student(student_id):
         if not st:
             flash("Student not found.")
             return redirect(url_for("manage_students"))
-
         con.execute("DELETE FROM attendance WHERE student_id = %s", (student_id,))
         con.execute("DELETE FROM students WHERE id = %s", (student_id,))
         con.execute("DELETE FROM users WHERE id = %s", (st["user_id"],))
-
-    flash(f"Student '{st['name']}' ({st['roll_no']}) deleted successfully.")
+        flash(f"Student '{st['name']}' ({st['roll_no']}) deleted successfully.")
     return redirect(url_for("manage_students"))
 
 
-# --- Teacher Management ---
 @app.route("/admin/teachers", methods=["GET", "POST"])
 @role_required("admin", "teacher")
 def manage_teachers():
@@ -795,7 +562,8 @@ def edit_teacher(teacher_id):
     with db() as con:
         t = con.execute("""
             SELECT t.*, u.username, u.id AS user_id
-            FROM teachers t JOIN users u ON u.id = t.user_id
+            FROM teachers t
+            JOIN users u ON u.id = t.user_id
             WHERE t.id = %s
         """, (teacher_id,)).fetchone()
         if not t:
@@ -811,6 +579,7 @@ def edit_teacher(teacher_id):
             if not name or not username:
                 flash("Name and Username are required.")
                 return redirect(url_for("edit_teacher", teacher_id=teacher_id))
+
             if password and len(password) < 8:
                 flash("Password must be at least 8 characters.")
                 return redirect(url_for("edit_teacher", teacher_id=teacher_id))
@@ -846,19 +615,15 @@ def delete_teacher(teacher_id):
         if not t:
             flash("Teacher not found.")
             return redirect(url_for("manage_teachers"))
-
         if t["user_id"] == int(current_user.id):
             flash("You cannot delete your own account while logged in.")
             return redirect(url_for("manage_teachers"))
-
         con.execute("DELETE FROM teachers WHERE id = %s", (teacher_id,))
         con.execute("DELETE FROM users WHERE id = %s", (t["user_id"],))
-
-    flash(f"Teacher '{t['name']}' deleted successfully.")
+        flash(f"Teacher '{t['name']}' deleted successfully.")
     return redirect(url_for("manage_teachers"))
 
 
-# --- Lecture / Session Management ---
 @app.route("/admin/session/new", methods=["POST"])
 @role_required("admin", "teacher")
 def new_session():
@@ -891,26 +656,18 @@ def new_session():
 @role_required("admin", "teacher")
 def show_session(session_id):
     now = int(datetime.now(timezone.utc).timestamp())
-
     with db() as con:
         s = con.execute("SELECT * FROM sessions WHERE id = %s", (session_id,)).fetchone()
         if not s:
             abort(404)
 
-        # If session is active and current QR slice expired, rotate token
         if s["active"] == 1 and s["expires_at"] <= now:
             generate_session_token(con, session_id)
             s = con.execute("SELECT * FROM sessions WHERE id = %s", (session_id,)).fetchone()
 
-        count = con.execute(
-            "SELECT COUNT(*) AS total FROM attendance WHERE session_id = %s", (session_id,)
-        ).fetchone()["total"]
-
-    qr_data = ""
-    if s["active"] == 1:
-        qr_data = generate_qr_base64(s["token"])
-
-    remaining = max(0, s["expires_at"] - now) if s["active"] == 1 else 0
+        count = con.execute("SELECT COUNT(*) AS total FROM attendance WHERE session_id = %s", (session_id,)).fetchone()["total"]
+        qr_data = generate_qr_base64(s["token"]) if s["active"] == 1 else ""
+        remaining = max(0, s["expires_at"] - now) if s["active"] == 1 else 0
 
     return render_template(
         "session.html",
@@ -936,7 +693,6 @@ def edit_session(session_id):
             if not title:
                 flash("Lecture title cannot be empty.")
                 return redirect(url_for("edit_session", session_id=session_id))
-
             con.execute("UPDATE sessions SET title = %s, active = %s WHERE id = %s", (title, active, session_id))
             flash(f"Lecture '{title}' updated successfully.")
             return redirect(url_for("admin_dashboard"))
@@ -952,12 +708,10 @@ def delete_session(session_id):
         if not s:
             flash("Lecture session not found.")
             return redirect(url_for("admin_dashboard"))
-
         con.execute("DELETE FROM dynamic_tokens WHERE session_id = %s", (session_id,))
         con.execute("DELETE FROM attendance WHERE session_id = %s", (session_id,))
         con.execute("DELETE FROM sessions WHERE id = %s", (session_id,))
-
-    flash(f"Lecture '{s['title']}' deleted successfully.")
+        flash(f"Lecture '{s['title']}' deleted successfully.")
     return redirect(url_for("admin_dashboard"))
 
 
@@ -969,7 +723,6 @@ def session_qr_feed(session_id):
         s = con.execute("SELECT * FROM sessions WHERE id = %s", (session_id,)).fetchone()
         if not s:
             return jsonify(ok=False, message="Session not found."), 404
-
         if not s["active"]:
             return jsonify(ok=False, active=False, message="Session is closed.")
 
@@ -979,11 +732,9 @@ def session_qr_feed(session_id):
             token = s["token"]
             expires_at = s["expires_at"]
 
-        count = con.execute(
-            "SELECT COUNT(*) AS total FROM attendance WHERE session_id = %s", (session_id,)
-        ).fetchone()["total"]
+        count = con.execute("SELECT COUNT(*) AS total FROM attendance WHERE session_id = %s", (session_id,)).fetchone()["total"]
+        qr_b64 = generate_qr_base64(token)
 
-    qr_b64 = generate_qr_base64(token)
     return jsonify(
         ok=True,
         active=True,
@@ -1001,11 +752,10 @@ def close_session(session_id):
     with db() as con:
         con.execute("UPDATE sessions SET active = 0 WHERE id = %s", (session_id,))
         con.execute("DELETE FROM dynamic_tokens WHERE session_id = %s", (session_id,))
-    flash("Attendance session closed.")
+        flash("Attendance session closed.")
     return redirect(url_for("admin_dashboard"))
 
 
-# --- Classroom Chat & Discussion API ---
 @app.route("/api/chat/post", methods=["POST"])
 @login_required
 def post_chat_message():
@@ -1013,16 +763,13 @@ def post_chat_message():
     if not message:
         flash("Message cannot be empty.")
         return redirect(request.referrer or url_for("admin_dashboard"))
-
     now = int(datetime.now(timezone.utc).timestamp())
     author = current_user.display_name or current_user.username
-
     with db() as con:
         con.execute("""
             INSERT INTO messages(user_id, author_name, role, message, created_at)
             VALUES (%s, %s, %s, %s, %s)
         """, (int(current_user.id), author, current_user.role, message, now))
-
     flash("Announcement posted.")
     return redirect(request.referrer or url_for("admin_dashboard"))
 
@@ -1035,42 +782,34 @@ def delete_chat_message(message_id):
         if not msg:
             flash("Message not found.")
             return redirect(request.referrer or url_for("admin_dashboard"))
-
         if current_user.role not in ("admin", "teacher") and msg["user_id"] != int(current_user.id):
             abort(403)
-
         con.execute("DELETE FROM messages WHERE id = %s", (message_id,))
-
-    flash("Message deleted.")
+        flash("Message deleted.")
     return redirect(request.referrer or url_for("admin_dashboard"))
 
 
-# --- Student Area ---
 @app.route("/student")
 @role_required("student")
 def student_dashboard():
     with db() as con:
-        student = con.execute(
-            "SELECT * FROM students WHERE user_id = %s",
-            (int(current_user.id),)
-        ).fetchone()
+        student = con.execute("SELECT * FROM students WHERE user_id = %s", (int(current_user.id),)).fetchone()
         if not student:
             abort(404)
-
         records = con.execute("""
             SELECT s.title, a.marked_at
             FROM attendance a
             JOIN sessions s ON s.id = a.session_id
             WHERE a.student_id = %s
-            ORDER BY a.marked_at DESC LIMIT 20
+            ORDER BY a.marked_at DESC
+            LIMIT 20
         """, (student["id"],)).fetchall()
-
-        # Fetch recent classroom announcements
         messages = con.execute("""
             SELECT m.*, u.username
             FROM messages m
             JOIN users u ON u.id = m.user_id
-            ORDER BY m.id DESC LIMIT 20
+            ORDER BY m.id DESC
+            LIMIT 20
         """).fetchall()
 
     return render_template("student.html", student=student, records=records, messages=messages)
@@ -1082,39 +821,29 @@ def mark_attendance():
     data = request.get_json(silent=True) or {}
     token = str(data.get("token", "")).strip()
     now = int(datetime.now(timezone.utc).timestamp())
-
     if not token:
         return jsonify(ok=False, message="No QR code data received."), 400
 
     with db() as con:
-        student = con.execute(
-            "SELECT id FROM students WHERE user_id = %s",
-            (int(current_user.id),)
-        ).fetchone()
-
+        student = con.execute("SELECT id FROM students WHERE user_id = %s", (int(current_user.id),)).fetchone()
         if not student:
             return jsonify(ok=False, message="Student profile not found."), 403
 
-        # Validate token against active sessions: current session token or a valid unexpired dynamic token
         s = con.execute("""
             SELECT s.id, s.title
             FROM sessions s
             WHERE s.active = 1
               AND (
-                  (s.token = %s AND s.expires_at + %s >= %s)
-                  OR EXISTS (
-                      SELECT 1 FROM dynamic_tokens dt
-                      WHERE dt.session_id = s.id
-                        AND dt.token = %s
-                        AND dt.expires_at >= %s
-                  )
+                (s.token = %s AND s.expires_at + %s >= %s)
+                OR EXISTS (
+                    SELECT 1 FROM dynamic_tokens dt
+                    WHERE dt.session_id = s.id AND dt.token = %s AND dt.expires_at >= %s
+                )
               )
         """, (token, QR_GRACE_PERIOD, now, token, now)).fetchone()
 
         if not s:
-            return jsonify(
-                ok=False, message="QR code expired or invalid. Please scan the current code on screen."
-            ), 400
+            return jsonify(ok=False, message="QR code expired or invalid. Please scan the current code on screen."), 400
 
         cur = con.execute("""
             INSERT INTO attendance(session_id, student_id, marked_at)
@@ -1123,9 +852,7 @@ def mark_attendance():
         """, (s["id"], student["id"], now))
 
         if cur.rowcount == 0:
-            return jsonify(
-                ok=True, message=f"Attendance already recorded for '{s['title']}'."
-            )
+            return jsonify(ok=True, message=f"Attendance already recorded for '{s['title']}'.")
 
     return jsonify(ok=True, message=f"Attendance marked successfully for '{s['title']}'!")
 
@@ -1155,16 +882,16 @@ def report_csv():
             JOIN students st ON st.id = a.student_id
             ORDER BY a.marked_at DESC
         """).fetchall()
-
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["Session", "Roll Number", "Student", "Timestamp (UTC)"])
     for r in rows:
         writer.writerow([
-            r["title"], r["roll_no"], r["name"],
+            r["title"],
+            r["roll_no"],
+            r["name"],
             datetime.fromtimestamp(r["marked_at"], timezone.utc).isoformat()
         ])
-
     return Response(
         output.getvalue(),
         mimetype="text/csv",
