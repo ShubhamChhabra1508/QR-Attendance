@@ -142,14 +142,220 @@ def init_db():
                 expires_at BIGINT NOT NULL,
                 active INTEGER NOT NULL DEFAULT 1
             );
-
             CREATE TABLE IF NOT EXISTS dynamic_tokens (
-                id SERIAL PRIMARY KEY,
-                session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-                token TEXT UNIQUE NOT NULL,
-                created_at BIGINT NOT NULL,
-                expires_at BIGINT NOT NULL
-            );
+            id SERIAL PRIMARY KEY,
+            session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            token TEXT UNIQUE NOT NULL,
+            created_at BIGINT NOT NULL,
+            expires_at BIGINT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_dynamic_tokens_lookup ON dynamic_tokens(token, expires_at);
+        CREATE TABLE IF NOT EXISTS attendance (
+            id SERIAL PRIMARY KEY,
+            session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+            marked_at BIGINT NOT NULL,
+            UNIQUE (session_id, student_id)
+        );
+        CREATE TABLE IF NOT EXISTS messages (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            author_name TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'teacher',
+            message TEXT NOT NULL,
+            created_at BIGINT NOT NULL
+        );
+        """)
+
+        # Seed admin teacher profile if missing
+        cur.execute("SELECT id FROM users WHERE username = %s", ("admin",))
+        admin_row = cur.fetchone()
+        if admin_row:
+            cur.execute("SELECT id FROM teachers WHERE user_id = %s", (admin_row["id"],))
+            if not cur.fetchone():
+                cur.execute("""
+                    INSERT INTO teachers(user_id, name, department, email)
+                    VALUES (%s, 'System Administrator', 'Administration', 'admin@institution.edu')
+                """, (admin_row["id"],))
+
+# Initialize database schema on startup
+init_db()
+
+
+class User(UserMixin):
+    def __init__(self, row, profile=None):
+        self.id = str(row["id"])
+        self.username = row["username"]
+        self.role = row["role"]
+        self.display_name = profile["name"] if profile and "name" in profile else row["username"]
+
+
+@login_manager.user_loader
+def load_user(user_id):
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return None
+    with db() as con:
+        row = con.execute("SELECT * FROM users WHERE id = %s", (uid,)).fetchone()
+        if not row:
+            return None
+        profile = None
+        if row["role"] in ("admin", "teacher"):
+            profile = con.execute("SELECT name FROM teachers WHERE user_id = %s", (uid,)).fetchone()
+        elif row["role"] == "student":
+            profile = con.execute("SELECT name FROM students WHERE user_id = %s", (uid,)).fetchone()
+        return User(row, profile)
+
+
+def role_required(*roles):
+    def decorator(view):
+        @wraps(view)
+        @login_required
+        def wrapped(*args, **kwargs):
+            if current_user.role not in roles:
+                abort(403)
+            return view(*args, **kwargs)
+        return wrapped
+    return decorator
+
+
+def create_account(username, password, role, name=None, roll_no=None, department=None, email=None):
+    if not username.strip() or len(password) < 8:
+        raise ValueError("Username is required; password must be at least 8 characters.")
+    if role == "student" and (not name or not roll_no):
+        raise ValueError("Student name and roll number are required.")
+    try:
+        with db() as con:
+            cur = con.execute(
+                "INSERT INTO users(username, password_hash, role) VALUES (%s, %s, %s) RETURNING id",
+                (username.strip(), generate_password_hash(password), role),
+            )
+            user_id = cur.fetchone()["id"]
+            if role == "student":
+                con.execute(
+                    "INSERT INTO students(user_id, roll_no, name) VALUES (%s, %s, %s)",
+                    (user_id, roll_no.strip(), name.strip()),
+                )
+            elif role in ("teacher", "admin"):
+                t_name = name.strip() if name else username.strip()
+                con.execute(
+                    "INSERT INTO teachers(user_id, name, department, email) VALUES (%s, %s, %s, %s)",
+                    (
+                        user_id,
+                        t_name,
+                        department.strip() if department else "Computer Science",
+                        email.strip() if email else "",
+                    ),
+                )
+    except errors.UniqueViolation:
+        raise ValueError("Username or roll number already exists.")
+
+
+def generate_session_token(con, session_id):
+    """Generate and store a new dynamic token valid for QR_TIMEOUT seconds."""
+    now = int(datetime.now(timezone.utc).timestamp())
+    token = make_dynamic_token()
+    expires_at = now + QR_TIMEOUT
+    con.execute("""
+        UPDATE sessions
+        SET token = %s, created_at = %s, expires_at = %s, active = 1
+        WHERE id = %s
+    """, (token, now, expires_at, session_id))
+    con.execute("""
+        INSERT INTO dynamic_tokens(session_id, token, created_at, expires_at)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (token) DO NOTHING
+    """, (session_id, token, now, expires_at + QR_GRACE_PERIOD))
+    con.execute("DELETE FROM dynamic_tokens WHERE expires_at < %s", (now - 3600,))
+    return token, expires_at
+
+
+@app.template_filter("datetimeformat")
+def datetimeformat(value):
+    if not value:
+        return ""
+    try:
+        dt = datetime.fromtimestamp(int(value), timezone.utc)
+        return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+    except Exception:
+        return str(value)
+
+
+@app.template_filter("timeago")
+def timeago_filter(value):
+    if not value:
+        return ""
+    try:
+        now = int(datetime.now(timezone.utc).timestamp())
+        diff = max(0, now - int(value))
+        if diff < 60:
+            return "just now"
+        elif diff < 3600:
+            return f"{diff // 60}m ago"
+        elif diff < 86400:
+            return f"{diff // 3600}h ago"
+        else:
+            return f"{diff // 86400}d ago"
+    except Exception:
+        return ""
+
+
+@app.context_processor
+def inject_clock():
+    return {"namespace_now": int(datetime.now(timezone.utc).timestamp())}
+
+
+@app.cli.command("init-demo")
+def init_demo():
+    """Create the database and sample accounts for testing."""
+    init_db()
+    demo_accounts = [
+        dict(username="admin", password="disha@123", role="admin", name="Administrator", department="Management"),
+        dict(username="teacher1", password="Teacher123!", role="teacher", name="Prof. Alan Turing", department="Computer Science", email="turing@college.edu"),
+        dict(username="student1", password="Student123!", role="student", name="Demo Student", roll_no="BT001"),
+    ]
+    for acc in demo_accounts:
+        with db() as con:
+            exists = con.execute("SELECT id FROM users WHERE username = %s", (acc["username"],)).fetchone()
+            if not exists:
+                create_account(**acc)
+    print("Demo accounts ready. Change their passwords before real use.")
+
+
+@app.route("/")
+def index():
+    if current_user.is_authenticated:
+        endpoint = "admin_dashboard" if current_user.role in ("admin", "teacher") else "student_dashboard"
+        return redirect(url_for(endpoint))
+    return redirect(url_for("login"))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        row = None
+        profile = None
+        with db() as con:
+            row = con.execute("SELECT * FROM users WHERE username = %s", (username,)).fetchone()
+            if row and check_password_hash(row["password_hash"], password):
+                if row["role"] in ("admin", "teacher"):
+                    profile = con.execute("SELECT name FROM teachers WHERE user_id = %s", (row["id"],)).fetchone()
+                elif row["role"] == "student":
+                    profile = con.execute("SELECT name FROM students WHERE user_id = %s", (row["id"],)).fetchone()
+                login_user(User(row, profile))
+                return redirect(url_for("admin_dashboard" if row["role"] in ("admin", "teacher") else "student_dashboard"))
+        flash("Invalid username or password.")
+    return render_template("login.html")
+
+
+@app.route("/logout", methods=["POST"])
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for("login"))
 
             CREATE INDEX IF NOT EXISTS idx_dynamic_tokens_lookup
                 ON dynamic_tokens(token, expires_at);
