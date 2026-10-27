@@ -13,8 +13,7 @@
 </div>
 
 <!-- 2-Column: Add Teacher Form + Registered Teachers List -->
-<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; align-items: start;">
-  
+<div style="display: grid; grid-template-columns: minmax(280px, 340px) minmax(0, 1fr); gap: 20px; align-items: start; width: 100%;">  
   <!-- Add Teacher Panel -->
   <div class="panel">
     <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
@@ -52,7 +51,7 @@
   </div>
 
   <!-- Registered Faculty Table -->
-  <div class="panel">
+<div class="panel" style="min-width: 0; width: 100%; overflow: hidden;">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 10px;">
       <h3 style="margin: 0; font-size: 1.15rem;">Active Faculty Members ({{ teachers|length }})</h3>
       <div style="width: min(240px, 100%);">
