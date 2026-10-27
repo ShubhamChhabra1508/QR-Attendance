@@ -688,3 +688,36 @@ footer, .site-footer {
     background-color: #1d4ed8;
     color: #ffffff;
 }
+/* 2 lines above */
+.nav-link.active:hover {
+  background-color: #1d4ed8;
+  color: #ffffff;
+}
+/* >>> PASTE BELOW <<< */
+
+/* Fix horizontal bleed and manage two-column admin view */
+.management-grid {
+  display: grid;
+  grid-template-columns: 360px minmax(0, 1fr);
+  gap: 1.5rem;
+  align-items: start;
+}
+
+@media (max-width: 960px) {
+  .management-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Ensure table container never forces horizontal page overflow */
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  white-space: nowrap;
+}
