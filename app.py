@@ -6,7 +6,10 @@ import secrets
 from functools import wraps
 from datetime import datetime, timezone
 from contextlib import contextmanager
-
+import io
+from flask import send_file
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment
 import psycopg2
 import psycopg2.extras
 from psycopg2 import errors
@@ -871,33 +874,55 @@ def report():
     return render_template("report.html", records=rows)
 
 
-@app.route("/admin/report.csv")
-@role_required("admin", "teacher")
-def report_csv():
-    with db() as con:
-        rows = con.execute("""
-            SELECT s.title, st.roll_no, st.name, a.marked_at
-            FROM attendance a
-            JOIN sessions s ON s.id = a.session_id
-            JOIN students st ON st.id = a.student_id
-            ORDER BY a.marked_at DESC
-        """).fetchall()
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Session", "Roll Number", "Student", "Timestamp (UTC)"])
-    for r in rows:
-        writer.writerow([
-            r["title"],
-            r["roll_no"],
-            r["name"],
-            datetime.fromtimestamp(r["marked_at"], timezone.utc).isoformat()
-        ])
-    return Response(
-        output.getvalue(),
-        mimetype="text/csv",
-        headers={"Content-Disposition": "attachment; filename=attendance.csv"}
-    )
+@app.route('/admin/report/export-excel')
+def export_excel():
+    # 1. Fetch records (use your existing attendance query / DB logic here)
+    # Example: records = Attendance.query.all()
+    # Or raw SQL: records = db.session.execute(...) / cursor.fetchall()
+    
+    # 2. Create the Excel workbook
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Attendance Report"
 
+    # Define headers matching your current table
+    headers = ["Session", "Roll Number", "Student", "Recorded Time (UTC)"]
+    ws.append(headers)
+
+    # Style header row (Dark Navy + Bold White text)
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="1F497D", end_color="1F497D", fill_type="solid")
+    for cell in ws[1]:
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    # 3. Populate attendance rows
+    for r in records:
+        ws.append([
+            getattr(r, 'session_name', '') or r[0],
+            getattr(r, 'roll_number', '') or r[1],
+            getattr(r, 'student_name', '') or r[2],
+            str(getattr(r, 'timestamp', '') or r[3])
+        ])
+
+    # 4. Auto-fit column widths
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or '')) for cell in col)
+        col_letter = col[0].column_letter
+        ws.column_dimensions[col_letter].width = max(max_len + 4, 15)
+
+    # 5. Stream the .xlsx file to the client
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+
+    return send_file(
+        buffer,
+        as_attachment=True,
+        download_name="Attendance_Report.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
 if __name__ == "__main__":
     with app.app_context():
