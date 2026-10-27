@@ -24,11 +24,11 @@
       </a>
     </div>
     {% if current_user.is_authenticated %}
-      <nav class="nav-links" style="display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-left: auto; flex-wrap: wrap;">
-        <span style="font-size: 0.85rem; font-weight: 600; color: var(--text-muted); padding: 4px 10px; background: #f1f5f9; border-radius: 999px;">
-          👤 {{ current_user.display_name or current_user.username }}
-          <span style="text-transform: capitalize; color: var(--brand); font-weight: 700;">({{ current_user.role }})</span>
-        </span>
+      <nav class="nav-links" style="display: flex; align-items: center; width: 100%; gap: 10px; flex-wrap: nowrap; font-size: 0.84rem;">
+      <span style="font-size: 0.85rem; font-weight: 600; color: var(--text-muted); padding: 4px 10px; background: #f1f5f9; border-radius: 999px; margin-right: auto; white-space: nowrap;">
+        👤 {{ current_user.display_name or current_user.username }}
+        <span style="text-transform: capitalize; color: var(--brand); font-weight: 700;">({{ current_user.role }})</span>
+      </span>
         {% if current_user.role in ['admin', 'teacher'] %}
           <a href="{{ url_for('admin_dashboard') }}"
    class="nav-link {% if request.endpoint == 'admin_dashboard' %}active{% endif %}">
